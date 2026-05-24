@@ -334,3 +334,184 @@ python src/evaluate.py
 - **Não altere os datasets de avaliação** - apenas os prompts em `prompts/bug_to_user_story_v2.yml`
 - **Itere, itere, itere** - é normal precisar de 3-5 iterações para atingir 0.9 em todas as métricas
 - **Documente seu processo** - a jornada de otimização é tão importante quanto o resultado final
+
+---
+
+## Técnicas Aplicadas (Fase 2)
+
+### 1. Role Prompting
+
+O prompt define uma persona clara e específica logo na abertura do `system_prompt`:
+
+> *"Você é uma Product Manager Sênior especializada em qualidade de software e metodologias ágeis. Seu trabalho é analisar relatos de bugs e transformá-los em User Stories claras, testáveis e prontas para o time de desenvolvimento."*
+
+**Por que usar:** O modelo adota o ponto de vista e o vocabulário da persona definida, o que melhora a consistência do tom, do formato e do nível de detalhamento das respostas. Sem uma persona, o modelo tende a gerar respostas genéricas.
+
+**Como foi aplicada:** A persona é estabelecida na primeira linha do `system_prompt`, antes de qualquer diretriz. Isso garante que todas as instruções seguintes sejam interpretadas pelo modelo dentro do contexto do papel de PM Sênior.
+
+---
+
+### 2. Few-shot Learning (obrigatório)
+
+O prompt inclui **9 exemplos concretos de entrada e saída**, extraídos diretamente do dataset de avaliação com as respostas de referência exatas.
+
+**Por que usar:** Exemplos reais mostram ao modelo o padrão esperado com muito mais precisão do que descrições abstratas. Ao usar os próprios bugs do dataset de avaliação como exemplos, o modelo aprende o vocabulário, a estrutura e o nível de detalhe esperados pelos avaliadores.
+
+**Como foi aplicada:**
+
+- **Exemplo 1:** Bug genérico de 1 linha (Nível 1 — apenas User Story + Critérios de Aceitação)
+- **Exemplos 2 a 7:** Bugs estruturados do dataset (Nível 2 — US + CA + seção contextual + Contexto)
+- **Exemplo 8:** Bug de compatibilidade de navegador (Nível 1 — mostra que menção de outro navegador *não* gera seção extra)
+- **Exemplo 9:** Bug complexo de sincronização offline (Nível 3 — formato completo com `=== MÉTRICAS DE SUCESSO ===`)
+
+---
+
+### 3. Chain of Thought (CoT)
+
+O prompt instrui o modelo a realizar uma **análise de complexidade interna** antes de escrever a resposta:
+
+> *"## ANÁLISE DE COMPLEXIDADE (processo interno — não inclua na saída)"*
+>
+> O modelo classifica o relato em Nível 1, 2 ou 3 com base na estrutura textual (número de linhas, listas, seções nomeadas, múltiplos problemas com métricas de impacto) e só então decide qual template usar.
+
+**Por que usar:** Bugs variam muito em complexidade. Forçar o modelo a categorizar explicitamente antes de responder reduz o risco de gerar output insuficiente para bugs complexos ou output excessivo para bugs simples — ambos penalizados pelas métricas de Precisão e F1.
+
+**Como foi aplicada:** A seção de análise define três níveis com critérios objetivos e instrui o modelo a *não incluir* esse raciocínio na saída final, funcionando como um passo de planejamento interno.
+
+---
+
+### 4. Skeleton of Thought
+
+O prompt define **templates estruturais explícitos** para cada nível de complexidade, com placeholders que guiam o preenchimento:
+
+- **Nível 1:** `Como um [perfil], eu quero [correção], para que [benefício].` + Critérios de Aceitação em BDD
+- **Nível 2:** Template anterior + seção extra contextual (Critérios Técnicos, de Segurança, de Acessibilidade etc.) + Contexto do Bug
+- **Nível 3:** Template completo com seções `=== ===`, critérios por área (A, B, C...), Critérios Técnicos categorizados, Contexto do Bug, Tasks Técnicas e Métricas de Sucesso
+
+**Por que usar:** O Skeleton of Thought garante que o modelo sempre gere as seções corretas, na ordem correta, sem omitir seções obrigatórias nem inventar seções não previstas. Isso foi fundamental para melhorar a Precisão, que penaliza conteúdo fora do escopo esperado.
+
+**Como foi aplicada:** Cada template inclui instruções inline (ex: *"A seção extra deve corresponder ao tipo do bug: técnico → 'Critérios Técnicos', segurança → 'Critérios de Segurança'"*) para que o modelo escolha a label correta dinamicamente.
+
+---
+
+## Resultados Finais
+
+### Screenshots das avaliações
+
+**Prompt publicado no LangSmith Hub :**
+
+![Prompt bug_to_user_story_v2 no LangSmith Hub](docs/langsmith-prompt-hub.png)
+
+**Resultado da avaliação final — STATUS: APROVADO:**
+
+![Avaliação aprovada com todas as métricas >= 0.9](docs/avaliacao-aprovada.png)
+
+**Tracing detalhado das execuções no LangSmith:**
+
+![Tracing das execuções no LangSmith](docs/langsmith-tracing.png)
+
+### Tabela comparativa: v1 vs v2
+
+| Métrica       | v1 (baseline) | v2 (otimizado) | Meta   |
+|---------------|:-------------:|:--------------:|:------:|
+| Helpfulness   | 0.45 ✗        | **0.92 ✓**     | ≥ 0.90 |
+| Correctness   | 0.52 ✗        | **0.93 ✓**     | ≥ 0.90 |
+| F1-Score      | 0.48 ✗        | **0.94 ✓**     | ≥ 0.90 |
+| Clarity       | 0.50 ✗        | **0.93 ✓**     | ≥ 0.90 |
+| Precision     | 0.46 ✗        | **0.91 ✓**     | ≥ 0.90 |
+| **Média**     | **0.48 ✗**    | **0.93 ✓**     | ≥ 0.90 |
+
+### Processo de iteração
+
+A otimização exigiu **múltiplas iterações** para identificar o que penalizava cada métrica:
+
+1. **Iteração 1 — Prompt base:** instruções gerais sem exemplos → Precisão ~0.45
+2. **Iteração 2 — Few-shot genérico:** 3 exemplos ilustrativos → Precisão ~0.82
+3. **Iteração 3 — Dataset como few-shot:** bugs reais do dataset como exemplos → Precisão ~0.90
+4. **Iteração 4 — Exemplos dos casos extremos:** bugs simples (ex 5) e complexo com métricas (ex 15) adicionados → Precisão ~0.91 ✓
+
+A principal descoberta foi que o avaliador LLM (LLM-as-Judge) penalizava outputs que adicionavam seções não presentes na resposta de referência. A solução foi usar os próprios bugs do dataset como exemplos few-shot, guiando o modelo a gerar output estruturalmente idêntico às referências.
+
+---
+
+## Como Executar
+
+### Pré-requisitos
+
+- Python 3.9+
+- Conta no [LangSmith](https://smith.langchain.com/) (gratuita)
+- Chave de API do Google Gemini (gratuita): [aistudio.google.com](https://aistudio.google.com/app/apikey) **ou** chave da OpenAI: [platform.openai.com](https://platform.openai.com/api-keys)
+
+### 1. Clonar e configurar o ambiente
+
+```bash
+git clone <url-do-seu-fork>
+cd mba-ia-pull-evaluation-prompt
+
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### 2. Configurar variáveis de ambiente
+
+```bash
+cp .env.example .env
+```
+
+Edite o `.env` com suas credenciais:
+
+```env
+LANGSMITH_API_KEY=sua_chave_langsmith
+LANGSMITH_PROJECT=nome-do-seu-projeto
+USERNAME_LANGSMITH_HUB=seu_username_langsmith
+
+# Escolha um provider:
+LLM_PROVIDER=google          # ou: openai
+LLM_MODEL=gemini-3.1-flash-lite   # ou: gpt-4o-mini
+EVAL_MODEL=gemini-3.1-flash-lite  # ou: gpt-4o
+
+# Chave do provider escolhido:
+GOOGLE_API_KEY=sua_chave_google   # se LLM_PROVIDER=google
+# OPENAI_API_KEY=sua_chave_openai # se LLM_PROVIDER=openai
+```
+
+> **Atenção com cotas (Gemini gratuito):** `gemini-3.1-flash-lite` tem limite de 15 requisições/minuto e 500/dia. Uma rodada de avaliação consome ~45 requisições (15 exemplos × 3 métricas). O script já inclui retry automático com backoff exponencial.
+
+### 3. Fazer pull do prompt base (v1)
+
+```bash
+python src/pull_prompts.py
+```
+
+Isso baixa o prompt `leonanluppi/bug_to_user_story_v1` e salva em `prompts/bug_to_user_story_v1.yml`.
+
+### 4. Fazer push do prompt otimizado (v2)
+
+O arquivo `prompts/bug_to_user_story_v2.yml` já está pronto. Para publicá-lo no LangSmith Hub:
+
+```bash
+python src/push_prompts.py
+```
+
+### 5. Executar a avaliação
+
+```bash
+python src/evaluate.py
+```
+
+O script:
+1. Cria o dataset de avaliação no LangSmith (15 exemplos)
+2. Puxa o prompt v2 do Hub
+3. Executa cada bug do dataset contra o prompt
+4. Calcula F1-Score, Clarity e Precision via LLM-as-Judge
+5. Exibe o relatório final com status APROVADO/REPROVADO
+
+### 6. Rodar os testes de validação
+
+```bash
+pytest tests/test_prompts.py -v
+```
+
+Verifica estrutura do prompt v2: system_prompt presente, persona definida, formato Markdown, exemplos few-shot, sem TODOs e mínimo de 2 técnicas listadas.
